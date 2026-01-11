@@ -1,4 +1,5 @@
 using System;
+using Sandbox.Utility;
 
 namespace Prediction;
 
@@ -35,6 +36,23 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 	/// </summary>
 	[Property]
 	public float InterpolationDelay { get; set; } = 0.1f;
+
+
+	/// <summary>
+	/// Time in seconds to smooth out prediction errors.
+	/// </summary>
+	[Property]
+	public float ErrorSmoothTime { get; set; } = 0.1f;
+
+	/// <summary>
+	/// Enable smoothing for prediction error correction.
+	/// </summary>
+	[Property]
+	public bool EnableErrorSmoothing { get; set; } = true;
+
+	// Smoothing state - this is the offset currently applied to WorldPosition
+	private Vector3 _visualPositionOffset;
+	private Rotation _visualRotationOffset = Rotation.Identity;
 
 	/// <summary>
 	/// The Connection Id of the player who controls this predicted object.
@@ -75,6 +93,50 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 	internal override void ProcessServerInputQueueInternal() => ProcessServerInputQueue();
 	internal override void SimulateInternal() => Simulate();
 	internal override void UpdateInterpolationInternal() => UpdateInterpolation();
+
+	/// <summary>
+	/// Get the true simulation position (without visual smoothing offset).
+	/// </summary>
+	private Vector3 SimulatedPosition => EnableErrorSmoothing && IsLocalController
+		? WorldPosition - _visualPositionOffset
+		: WorldPosition;
+
+	/// <summary>
+	/// Get the true simulation rotation (without visual smoothing offset).
+	/// </summary>
+	private Rotation SimulatedRotation => EnableErrorSmoothing && IsLocalController
+		? WorldRotation * _visualRotationOffset.Inverse
+		: WorldRotation;
+
+	private IDisposable WithSimulatedPosition()
+	{
+		if ( !EnableErrorSmoothing || !IsLocalController )
+			return null;
+
+		WorldPosition -= _visualPositionOffset;
+		WorldRotation *= _visualRotationOffset.Inverse;
+
+		return new DisposeAction( () =>
+		{
+			WorldPosition += _visualPositionOffset;
+			WorldRotation *= _visualRotationOffset;
+		} );
+	}
+
+	/// <summary>
+	/// Set the visual offset to smoothly correct from the current visual position to the true simulated position.
+	/// </summary>
+	private void SetSmoothingOffset( Vector3 fromVisualPosition, Rotation fromVisualRotation )
+	{
+		if ( !EnableErrorSmoothing )
+			return;
+
+		_visualPositionOffset = fromVisualPosition - WorldPosition;
+		_visualRotationOffset = fromVisualRotation * WorldRotation.Inverse;
+
+		WorldPosition += _visualPositionOffset;
+		WorldRotation *= _visualRotationOffset;
+	}
 
 	/// <summary>
 	/// Set the controller of this predicted object. Call this on the host when spawning.
@@ -198,10 +260,41 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 	/// </summary>
 	private void UpdateInterpolation()
 	{
-		if ( !IsLocalController )
+		if ( IsLocalController )
+		{
+			ApplyErrorSmoothing();
+		}
+		else
 		{
 			UpdateRemotePlayerInterpolation();
 		}
+	}
+
+	private void ApplyErrorSmoothing()
+	{
+		if ( !EnableErrorSmoothing )
+			return;
+
+		if ( _visualPositionOffset.LengthSquared < 0.0001f && _visualRotationOffset.Distance( Rotation.Identity ) < 0.001f )
+		{
+			_visualPositionOffset = Vector3.Zero;
+			_visualRotationOffset = Rotation.Identity;
+			return;
+		}
+
+		// Exponential decay toward zero offset
+		var decayRate = 1f / ErrorSmoothTime;
+		var decay = 1f - MathF.Exp( -decayRate * Time.Delta );
+
+		var oldOffset = _visualPositionOffset;
+		var oldRotOffset = _visualRotationOffset;
+
+		_visualPositionOffset = Vector3.Lerp( _visualPositionOffset, Vector3.Zero, decay );
+		_visualRotationOffset = Rotation.Lerp( _visualRotationOffset, Rotation.Identity, decay );
+
+		// Update WorldPosition/WorldRotation to reflect the new offset
+		WorldPosition = WorldPosition - oldOffset + _visualPositionOffset;
+		WorldRotation = WorldRotation * oldRotOffset.Inverse * _visualRotationOffset;
 	}
 
 	private void SimulateHostController( int currentTick )
@@ -230,11 +323,14 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 
 	private void SimulateInternal( TInput input )
 	{
-		var dt = _system?.TickInterval ?? (1f / 60f);
-
-		using ( Time.Scope( Time.Now, dt ) )
+		using ( WithSimulatedPosition() )
 		{
-			_predicted.OnSimulate( input );
+			var dt = _system?.TickInterval ?? (1f / 60f);
+
+			using ( Time.Scope( Time.Now, dt ) )
+			{
+				_predicted.OnSimulate( input );
+			}
 		}
 	}
 
@@ -300,8 +396,8 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 		{
 			Tick = tick,
 			Time = Time.Now,
-			Position = WorldPosition,
-			Rotation = WorldRotation
+			Position = SimulatedPosition,
+			Rotation = SimulatedRotation
 		};
 
 		_predicted?.WriteState( ref state );
@@ -399,6 +495,14 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 
 	private void Reconcile( TState serverState, TState predictedState )
 	{
+		// Remember where we are visually
+		var visualPosition = WorldPosition;
+		var visualRotation = WorldRotation;
+
+		// Reset visual offset before applying server state
+		_visualPositionOffset = Vector3.Zero;
+		_visualRotationOffset = Rotation.Identity;
+
 		// Snap to server state
 		ApplyState( serverState );
 
@@ -410,22 +514,20 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 				inputsToReplay.Add( input );
 		}
 
-		// Clear ALL history - we're rebuilding from the server state
 		_inputHistory.Clear();
 		_stateHistory.Clear();
 
 		// Replay and rebuild history
 		foreach ( var input in inputsToReplay )
 		{
+			_inputHistory.Enqueue( input );
 			SimulateInternal( input );
 
-			// Re-store the input
-			_inputHistory.Enqueue( input );
-
-			// Capture the NEW corrected state for this tick
 			var correctedState = CaptureState( input.Tick );
 			_stateHistory.Enqueue( correctedState );
 		}
+
+		SetSmoothingOffset( visualPosition, visualRotation );
 
 		_predicted?.OnReconcile( serverState, predictedState );
 	}
