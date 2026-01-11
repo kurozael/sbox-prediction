@@ -5,7 +5,8 @@ namespace Prediction;
 
 /// <summary>
 /// Add this component to any GameObject that needs client-side prediction.
-/// Requires the GameObject to have NetworkFlags.NoTransformSync set.
+/// Works with PredictionSystem for centralized tick management.
+/// Maintains separate simulation and visual transforms for smooth reconciliation.
 /// </summary>
 public sealed class PredictionController : Component
 {
@@ -22,10 +23,16 @@ public sealed class PredictionController : Component
 	public float ReconciliationTolerance { get; set; } = 0.1f;
 
 	/// <summary>
-	/// How fast to interpolate after reconciliation (higher = faster correction).
+	/// How fast to interpolate visuals toward simulation position (higher = faster correction).
 	/// </summary>
 	[Property]
-	public float ReconciliationSpeed { get; set; } = 10f;
+	public float VisualInterpolationSpeed { get; set; } = 15f;
+
+	/// <summary>
+	/// Maximum distance the visual can lag behind simulation before snapping.
+	/// </summary>
+	[Property]
+	public float MaxVisualOffset { get; set; } = 2f;
 
 	/// <summary>
 	/// Enable interpolation for remote players (non-predicted entities).
@@ -46,7 +53,15 @@ public sealed class PredictionController : Component
 	[Sync( SyncFlags.FromHost )]
 	private Guid ControllerId { get; set; }
 
-	// Internal state
+	// Simulation transform (authoritative position after prediction/reconciliation)
+	private Vector3 _simulationPosition;
+	private Rotation _simulationRotation;
+
+	// Visual transform offset (for smooth interpolation during reconciliation)
+	private Vector3 _visualOffset;
+	private Rotation _visualRotationOffset;
+
+	// Input/state history
 	private readonly Queue<PredictionInput> _inputHistory = new();
 	private readonly Queue<PredictionState> _stateHistory = new();
 	private readonly Queue<PredictionState> _remoteStateBuffer = new();
@@ -57,17 +72,12 @@ public sealed class PredictionController : Component
 	private int _serverTick;
 	private PredictionInput _lastServerInput;
 
-	private int _currentTick;
-	private int _lastAcknowledgedTick;
 	private int _lastQueuedInputTick;
 	private IPredicted _predicted;
 	private PredictionInput? _previousInput;
 	private PredictionInput _pendingInput;
 
-	/// <summary>
-	/// Fixed timestep for simulation.
-	/// </summary>
-	private float FixedDelta => Scene.FixedDelta;
+	private PredictionSystem _system;
 
 	/// <summary>
 	/// Returns true if the local client is the controller of this predicted object.
@@ -78,6 +88,16 @@ public sealed class PredictionController : Component
 	/// Returns true if we are the host AND the controller (no prediction needed, we are authoritative).
 	/// </summary>
 	private bool IsHostController => Networking.IsHost && IsLocalController;
+
+	/// <summary>
+	/// The current simulation position (authoritative).
+	/// </summary>
+	public Vector3 SimulationPosition => _simulationPosition;
+
+	/// <summary>
+	/// The current simulation rotation (authoritative).
+	/// </summary>
+	public Rotation SimulationRotation => _simulationRotation;
 
 	/// <summary>
 	/// Set the controller of this predicted object. Call this on the host when spawning.
@@ -124,87 +144,29 @@ public sealed class PredictionController : Component
 		{
 			Log.Warning( $"PredictionController on {GameObject.Name} requires an IPredicted component!" );
 		}
+
+		// Initialize simulation transform to the current world transform
+		_simulationPosition = WorldPosition;
+		_simulationRotation = WorldRotation;
+
+		// Register with the prediction system
+		_system = Scene.GetSystem<PredictionSystem>();
+		_system?.Register( this );
 	}
 
-	protected override void OnUpdate()
+	protected override void OnDestroy()
 	{
-		// Remote player interpolation
-		if ( !IsLocalController )
-		{
-			UpdateRemotePlayerInterpolation();
-		}
+		_system?.Unregister( this );
 	}
 
-	protected override void OnFixedUpdate()
+	/// <summary>
+	/// Called by PredictionSystem to process server input queue (host only, remote controllers).
+	/// </summary>
+	public void ProcessServerInputQueue()
 	{
 		if ( _predicted == null )
 			return;
 
-		// Host processes queued inputs from remote controllers
-		if ( Networking.IsHost && !IsLocalController )
-		{
-			ProcessServerInputQueue();
-		}
-
-		// Local controller simulates every fixed update
-		if ( IsLocalController )
-		{
-			if ( IsHostController )
-			{
-				SimulateHostController();
-			}
-			else
-			{
-				SimulateClientController();
-			}
-		}
-	}
-
-	/// <summary>
-	/// Call this to set the current frame's input before simulation.
-	/// </summary>
-	public void SetInput( PredictionInput input )
-	{
-		_pendingInput = input;
-		_pendingInput.Tick = _currentTick;
-	}
-
-	private void SimulateHostController()
-	{
-		_pendingInput.Tick = _currentTick;
-		_predicted.BuildInput( ref _pendingInput );
-
-		using ( Time.Scope( Time.Now, FixedDelta ) )
-		{
-			_predicted.OnSimulate( _pendingInput );
-		}
-
-		var state = CaptureState( _currentTick );
-		BroadcastStateToClients( state );
-
-		_currentTick++;
-	}
-
-	private void SimulateClientController()
-	{
-		_pendingInput.Tick = _currentTick;
-		_predicted.BuildInput( ref _pendingInput );
-
-		using ( Time.Scope( Time.Now, FixedDelta ) )
-		{
-			_predicted.OnSimulate( _pendingInput );
-		}
-
-		StoreHistory( _pendingInput );
-
-		SendInputToServer( _pendingInput, _previousInput );
-		_previousInput = _pendingInput;
-
-		_currentTick++;
-	}
-
-	private void ProcessServerInputQueue()
-	{
 		const int maxInputsPerFrame = 5;
 		var processed = 0;
 
@@ -215,11 +177,7 @@ public sealed class PredictionController : Component
 			// Fill gaps with the last known input
 			while ( _serverTick < input.Tick && processed < maxInputsPerFrame )
 			{
-				using ( Time.Scope( Time.Now, FixedDelta ) )
-				{
-					_predicted.OnSimulate( _lastServerInput );
-				}
-
+				SimulateInternal( _lastServerInput );
 				_serverTick++;
 				processed++;
 			}
@@ -230,11 +188,7 @@ public sealed class PredictionController : Component
 			_serverInputQueue.Dequeue();
 			processed++;
 
-			using ( Time.Scope( Time.Now, FixedDelta ) )
-			{
-				_predicted.OnSimulate( input );
-			}
-
+			SimulateInternal( input );
 			_lastServerInput = input;
 			_serverTick++;
 
@@ -253,6 +207,96 @@ public sealed class PredictionController : Component
 				BroadcastStateToClients( serverState );
 			}
 		}
+	}
+
+	/// <summary>
+	/// Called by PredictionSystem to simulate (local controllers only).
+	/// </summary>
+	public void Simulate()
+	{
+		if ( _predicted == null )
+			return;
+
+		var currentTick = _system?.CurrentTick ?? 0;
+
+		if ( IsHostController )
+		{
+			SimulateHostController( currentTick );
+		}
+		else
+		{
+			SimulateClientController( currentTick );
+		}
+	}
+
+	/// <summary>
+	/// Called by PredictionSystem every frame to update visual interpolation.
+	/// </summary>
+	public void UpdateVisuals()
+	{
+		if ( !IsLocalController )
+		{
+			UpdateRemotePlayerInterpolation();
+			return;
+		}
+
+		// Interpolate visual offset toward zero (smooth out reconciliation)
+		if ( _visualOffset.LengthSquared > 0.0001f || _visualRotationOffset != Rotation.Identity )
+		{
+			var lerpSpeed = VisualInterpolationSpeed * Time.Delta;
+			_visualOffset = Vector3.Lerp( _visualOffset, Vector3.Zero, lerpSpeed );
+			_visualRotationOffset = Rotation.Lerp( _visualRotationOffset, Rotation.Identity, lerpSpeed );
+
+			// Snap if close enough
+			if ( _visualOffset.Length < 0.001f )
+			{
+				_visualOffset = Vector3.Zero;
+				_visualRotationOffset = Rotation.Identity;
+			}
+		}
+
+		// Apply visual transform (simulation + offset for smooth rendering)
+		WorldPosition = _simulationPosition + _visualOffset;
+		WorldRotation = _simulationRotation * _visualRotationOffset;
+	}
+
+	private void SimulateHostController( int currentTick )
+	{
+		_pendingInput.Tick = currentTick;
+		_predicted.BuildInput( ref _pendingInput );
+
+		SimulateInternal( _pendingInput );
+
+		var state = CaptureState( currentTick );
+		BroadcastStateToClients( state );
+	}
+
+	private void SimulateClientController( int currentTick )
+	{
+		_pendingInput.Tick = currentTick;
+		_predicted.BuildInput( ref _pendingInput );
+
+		SimulateInternal( _pendingInput );
+
+		StoreHistory( _pendingInput );
+
+		SendInputToServer( _pendingInput, _previousInput );
+		_previousInput = _pendingInput;
+	}
+
+	private void SimulateInternal( PredictionInput input )
+	{
+		WorldPosition = _simulationPosition;
+		WorldRotation = _simulationRotation;
+
+		using ( Time.Scope( Time.Now, _system?.FixedDelta ?? Scene.FixedDelta ) )
+		{
+			_predicted.OnSimulate( input );
+		}
+
+		// Capture the result back to simulation transform
+		_simulationPosition = WorldPosition;
+		_simulationRotation = WorldRotation;
 	}
 
 	private void UpdateRemotePlayerInterpolation()
@@ -315,8 +359,8 @@ public sealed class PredictionController : Component
 		{
 			Tick = tick,
 			Time = Time.Now,
-			Position = WorldPosition,
-			Rotation = WorldRotation
+			Position = _simulationPosition,
+			Rotation = _simulationRotation
 		};
 
 		_predicted?.CaptureState( ref state );
@@ -326,8 +370,11 @@ public sealed class PredictionController : Component
 
 	private void ApplyState( PredictionState state )
 	{
-		WorldPosition = state.Position;
-		WorldRotation = state.Rotation;
+		_simulationPosition = state.Position;
+		_simulationRotation = state.Rotation;
+
+		WorldPosition = _simulationPosition;
+		WorldRotation = _simulationRotation;
 
 		_predicted?.ApplyState( state );
 	}
@@ -337,6 +384,9 @@ public sealed class PredictionController : Component
 	{
 		if ( Networking.IsHost )
 			return;
+
+		// Update server tick tracking
+		_system?.UpdateServerTick( state.Tick );
 
 		if ( _remoteStateBuffer.Count > 0 )
 		{
@@ -383,9 +433,7 @@ public sealed class PredictionController : Component
 		if ( !IsLocalController || Networking.IsHost )
 			return;
 
-		if ( serverState.Tick <= _lastAcknowledgedTick )
-			return;
-
+		// Find our predicted state for this tick
 		PredictionState? predictedState = null;
 		foreach ( var state in _stateHistory )
 		{
@@ -399,18 +447,31 @@ public sealed class PredictionController : Component
 		if ( !predictedState.HasValue )
 			return;
 
-		_lastAcknowledgedTick = serverState.Tick;
+		// Track acknowledged tick
+		_system?.AcknowledgeTick( serverState.Tick );
 
 		if ( predictedState.Value.Equals( serverState, ReconciliationTolerance ) )
+		{
+			// Prediction was correct, just clean up old history
+			ClearHistoryBefore( serverState.Tick );
 			return;
+		}
 
+		// Prediction was wrong, need to reconcile
 		Reconcile( serverState );
 	}
 
 	private void Reconcile( PredictionState serverState )
 	{
+		// Calculate the visual offset before reconciliation
+		// This represents where we *were* visually vs where we *should* be
+		var oldVisualPosition = _simulationPosition + _visualOffset;
+		var oldVisualRotation = _simulationRotation * _visualRotationOffset;
+
+		// Apply the authoritative server state
 		ApplyState( serverState );
 
+		// Replay all inputs after the server state
 		var inputsToReplay = new List<PredictionInput>();
 		foreach ( var input in _inputHistory )
 		{
@@ -420,10 +481,19 @@ public sealed class PredictionController : Component
 
 		foreach ( var input in inputsToReplay )
 		{
-			using ( Time.Scope( Time.Now, FixedDelta ) )
-			{
-				_predicted.OnSimulate( input );
-			}
+			SimulateInternal( input );
+		}
+
+		// Now _simulationPosition is where we should be after replay
+		// Calculate new visual offset to smoothly interpolate from old visual position
+		_visualOffset = oldVisualPosition - _simulationPosition;
+		_visualRotationOffset = _simulationRotation.Inverse * oldVisualRotation;
+
+		// Clamp the offset if it's too large (snap instead of crazy interpolation)
+		if ( _visualOffset.Length > MaxVisualOffset )
+		{
+			_visualOffset = Vector3.Zero;
+			_visualRotationOffset = Rotation.Identity;
 		}
 
 		_predicted.OnReconcile();

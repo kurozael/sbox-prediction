@@ -1,4 +1,4 @@
-using Sandbox;
+using System;
 
 namespace Prediction;
 
@@ -11,15 +11,16 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 	[Property] public float MoveSpeed { get; set; } = 200f;
 	[Property] public float JumpForce { get; set; } = 300f;
 	[Property] public float Gravity { get; set; } = 800f;
+	[Property] public float GroundAcceleration { get; set; } = 10f;
+	[Property] public float GroundFriction { get; set; } = 8f;
+	[Property] public float AirAcceleration { get; set; } = 0.5f;
 	[Property] public CharacterController CharacterController { get; set; }
 
-	private PredictionController _prediction;
 	private Vector3 _velocity;
 	private bool _isGrounded;
 
 	protected override void OnStart()
 	{
-		_prediction = Components.Get<PredictionController>();
 		CharacterController ??= Components.Get<CharacterController>();
 	}
 
@@ -34,7 +35,10 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 		_velocity = state.Velocity;
 		_isGrounded = state.IsGrounded;
 
-		CharacterController?.Velocity = _velocity;
+		if ( CharacterController != null )
+		{
+			CharacterController.Velocity = _velocity;
+		}
 	}
 
 	void IPredicted.BuildInput( ref PredictionInput input )
@@ -52,21 +56,42 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 		if ( CharacterController == null )
 			return;
 
-		// Grounded comes from the controller's collision state.
 		_isGrounded = CharacterController.IsOnGround;
 
 		var moveSpeed = MoveSpeed;
 		if ( input.Run ) moveSpeed *= 4f;
 
 		var wishDir = input.MoveDirection.Normal;
-		var wishVelocity = wishDir * moveSpeed;
-
 		var viewRotation = Rotation.FromYaw( input.ViewAngles.yaw );
-		wishVelocity = viewRotation * wishVelocity;
+		var wishVelocity = viewRotation * (wishDir * moveSpeed);
 
 		if ( _isGrounded )
 		{
-			_velocity = wishVelocity;
+			// Apply friction first
+			var speed = _velocity.WithZ( 0 ).Length;
+			if ( speed > 0.1f )
+			{
+				var drop = speed * GroundFriction * Time.Delta;
+				var scale = MathF.Max( speed - drop, 0 ) / speed;
+				_velocity.x *= scale;
+				_velocity.y *= scale;
+			}
+			else
+			{
+				_velocity.x = 0;
+				_velocity.y = 0;
+			}
+
+			// Accelerate toward wish velocity
+			var currentSpeed = Vector3.Dot( _velocity, wishVelocity.Normal );
+			var addSpeed = moveSpeed - currentSpeed;
+
+			if ( addSpeed > 0 )
+			{
+				var accelSpeed = GroundAcceleration * moveSpeed * Time.Delta;
+				accelSpeed = MathF.Min( accelSpeed, addSpeed );
+				_velocity += wishVelocity.Normal * accelSpeed;
+			}
 
 			if ( input.Jump )
 			{
@@ -76,7 +101,17 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 		}
 		else
 		{
-			_velocity += wishVelocity * 0.1f * Time.Delta;
+			// Air movement
+			var currentSpeed = Vector3.Dot( _velocity.WithZ( 0 ), wishVelocity.Normal );
+			var addSpeed = moveSpeed - currentSpeed;
+
+			if ( addSpeed > 0 )
+			{
+				var accelSpeed = AirAcceleration * moveSpeed * Time.Delta;
+				accelSpeed = MathF.Min( accelSpeed, addSpeed );
+				_velocity += wishVelocity.Normal * accelSpeed;
+			}
+
 			_velocity += Vector3.Down * Gravity * Time.Delta;
 		}
 
