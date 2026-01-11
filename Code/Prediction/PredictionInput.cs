@@ -9,6 +9,7 @@ public struct PredictionInput
 	public int Tick;
 	public Vector3 MoveDirection;
 	public Angles ViewAngles;
+	public bool Run;
 	public bool Jump;
 	public bool Attack;
 	public bool Use;

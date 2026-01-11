@@ -17,9 +17,6 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 	[Property]
 	public float Gravity { get; set; } = 800f;
 
-	public bool IsOnGround => CharacterController.IsOnGround;
-	public Vector3 Velocity => CharacterController.Velocity;
-
 	[Property]
 	public CharacterController CharacterController { get; set; }
 
@@ -39,7 +36,7 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 	protected override void OnUpdate()
 	{
 		// Only the controlling client builds input
-		if ( _prediction is not { IsLocalController: true } )
+		if ( _prediction == null || !_prediction.IsLocalController )
 			return;
 
 		// Build input from player's actual input devices
@@ -54,12 +51,27 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 		// } );
 	}
 
+	void IPredicted.CaptureState( ref PredictionState state )
+	{
+
+	}
+
+	void IPredicted.ApplyState( PredictionState state )
+	{
+
+	}
+
+	void IPredicted.BuildInput( ref PredictionInput input )
+	{
+
+	}
+
 	/// <summary>
 	/// This is called by the prediction system for simulation.
 	/// Runs on client for prediction, and on server for authority.
 	/// Must be deterministic - same input should produce same output!
 	/// </summary>
-	public void OnSimulate( PredictionInput input )
+	void IPredicted.OnSimulate( PredictionInput input )
 	{
 		if ( CharacterController == null )
 			return;
@@ -67,9 +79,12 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 		// Check ground state
 		_isGrounded = CharacterController.IsOnGround;
 
+		var moveSpeed = MoveSpeed;
+		if ( input.Run ) moveSpeed *= 4f;
+
 		// Build wish velocity from input
 		var wishDir = input.MoveDirection.Normal;
-		var wishVelocity = wishDir * MoveSpeed;
+		var wishVelocity = wishDir * moveSpeed;
 
 		// Transform to world space based on view angles
 		var viewRotation = Rotation.FromYaw( input.ViewAngles.yaw );
@@ -100,7 +115,7 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 		CharacterController.Velocity = _velocity;
 		CharacterController.Move();
 
-		// Update velocity from character controller (handles collisions)
+		// Update velocity from the character controller (handles collisions)
 		_velocity = CharacterController.Velocity;
 	}
 
@@ -108,7 +123,7 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 	/// Called when the server corrects our prediction.
 	/// Use this to reset any visual effects or sounds that shouldn't repeat.
 	/// </summary>
-	public void OnReconcile()
+	void IPredicted.OnReconcile()
 	{
 		// Example: You might want to:
 		// - Cancel footstep sounds that were predicted
@@ -127,8 +142,7 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 	}
 
 	/// <summary>
-	/// Example: How to spawn a predicted player on the host.
-	/// Call this when a player connects.
+	/// Example: How to set up a predicted player on the host.
 	/// </summary>
 	public static void SetupPrediction( GameObject gameObject, Connection controller )
 	{

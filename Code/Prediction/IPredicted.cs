@@ -9,7 +9,12 @@ public interface IPredicted
 	/// Called every simulation tick with the current input.
 	/// Implement your movement/action logic here.
 	/// </summary>
+	/// <param name="input">The input for this tick.</param>
 	void OnSimulate( PredictionInput input );
+
+	void BuildInput( ref PredictionInput input );
+	void CaptureState( ref PredictionState state );
+	void ApplyState( PredictionState state );
 
 	/// <summary>
 	/// Optional: Called when the server corrects our predicted state.
