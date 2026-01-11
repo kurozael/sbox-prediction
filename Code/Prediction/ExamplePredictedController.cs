@@ -14,6 +14,7 @@ public sealed class PlayerPredictionController : PredictionController<PlayerInpu
 /// Example player controller demonstrating how to use the prediction system.
 /// This component should be on the same GameObject as PlayerPredictionController.
 /// </summary>
+[Title( "Predicted Player" )]
 public sealed class ExamplePredictedPlayer : Component, IPredicted<PlayerInput, PlayerState>
 {
 	[Property] public float MoveSpeed { get; set; } = 200f;
@@ -34,8 +35,8 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted<PlayerInput, 
 
 	protected override void OnUpdate()
 	{
-		//Scene.Camera.WorldPosition = WorldPosition + Vector3.Up * 100f + Vector3.Backward * 400f;
-		//Scene.Camera.WorldRotation = Rotation.LookAt( WorldPosition - Scene.Camera.WorldPosition, Vector3.Up );
+		Scene.Camera.WorldPosition = WorldPosition + Vector3.Up * 100f + Vector3.Backward * 400f;
+		Scene.Camera.WorldRotation = Rotation.LookAt( WorldPosition - Scene.Camera.WorldPosition, Vector3.Up );
 	}
 
 	void IPredicted<PlayerInput, PlayerState>.WriteState( ref PlayerState state )

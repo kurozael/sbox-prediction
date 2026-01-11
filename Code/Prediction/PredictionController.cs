@@ -40,7 +40,7 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 	/// The Connection Id of the player who controls this predicted object.
 	/// Set via SetController() - synced from host to all clients.
 	/// </summary>
-	[Sync( SyncFlags.FromHost )]
+	[Property, Sync( SyncFlags.FromHost )]
 	private Guid ControllerId { get; set; }
 
 	// Input/state history
@@ -51,7 +51,6 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 	// Server-side input queue
 	private readonly Queue<TInput> _serverInputQueue = new();
 	private Connection _controllerConnection;
-	private int _serverTick;
 	private TInput _lastServerInput;
 
 	private int _lastQueuedInputTick;
@@ -65,7 +64,7 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 	/// <summary>
 	/// Returns true if the local client is the controller of this predicted object.
 	/// </summary>
-	public override bool IsLocalController => ControllerId != Guid.Empty && ControllerId == Connection.Local?.Id;
+	public override bool IsLocalController => ControllerId == Connection.Local.Id;
 
 	/// <summary>
 	/// Returns true if we are the host AND the controller (no prediction needed, we are authoritative).
@@ -141,45 +140,36 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 		if ( _predicted == null )
 			return;
 
-		const int maxInputsPerFrame = 5;
-		var processed = 0;
+		var currentTick = _system?.CurrentTick ?? 0;
 
-		while ( _serverInputQueue.Count > 0 && processed < maxInputsPerFrame )
+		// Check if we have an input for this tick (or earlier that we missed)
+		while ( _serverInputQueue.Count > 0 )
 		{
 			var input = _serverInputQueue.Peek();
 
-			// Fill gaps with the last known input
-			while ( _serverTick < input.Tick && processed < maxInputsPerFrame )
-			{
-				SimulateInternal( _lastServerInput );
-				_serverTick++;
-				processed++;
-			}
-
-			if ( processed >= maxInputsPerFrame )
+			if ( input.Tick > currentTick )
 				break;
 
 			_serverInputQueue.Dequeue();
-			processed++;
-
-			SimulateInternal( input );
 			_lastServerInput = input;
-			_serverTick++;
+		}
 
-			var serverState = CaptureState( input.Tick );
+		// Simulate with whatever input we have (last known if nothing new)
+		SimulateInternal( _lastServerInput );
 
-			if ( _controllerConnection != null )
+		var serverState = CaptureState( currentTick );
+
+		if ( _controllerConnection != null )
+		{
+			using ( Rpc.FilterInclude( _controllerConnection ) )
 			{
-				using ( Rpc.FilterInclude( _controllerConnection ) )
-				{
-					SendServerStateToController( serverState );
-				}
+				SendServerStateToController( serverState );
 			}
+		}
 
-			using ( Rpc.FilterExclude( _controllerConnection ) )
-			{
-				BroadcastStateToClients( serverState );
-			}
+		using ( Rpc.FilterExclude( _controllerConnection ) )
+		{
+			BroadcastStateToClients( serverState );
 		}
 	}
 
@@ -293,11 +283,13 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 	private void StoreHistory( TInput input )
 	{
 		_inputHistory.Enqueue( input );
+
 		while ( _inputHistory.Count > HistorySize )
 			_inputHistory.Dequeue();
 
 		var state = CaptureState( input.Tick );
 		_stateHistory.Enqueue( state );
+
 		while ( _stateHistory.Count > HistorySize )
 			_stateHistory.Dequeue();
 	}
@@ -350,11 +342,6 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 	{
 		if ( !Networking.IsHost )
 			return;
-
-		if ( _serverTick == 0 && _lastQueuedInputTick == 0 )
-		{
-			_serverTick = input.Tick;
-		}
 
 		if ( previousInput.HasValue && previousInput.Value.Tick > _lastQueuedInputTick )
 		{
@@ -415,7 +402,7 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 		// Snap to server state
 		ApplyState( serverState );
 
-		// Replay all inputs after the server state
+		// Collect inputs to replay
 		var inputsToReplay = new List<TInput>();
 		foreach ( var input in _inputHistory )
 		{
@@ -423,13 +410,24 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 				inputsToReplay.Add( input );
 		}
 
+		// Clear ALL history - we're rebuilding from the server state
+		_inputHistory.Clear();
+		_stateHistory.Clear();
+
+		// Replay and rebuild history
 		foreach ( var input in inputsToReplay )
 		{
 			SimulateInternal( input );
+
+			// Re-store the input
+			_inputHistory.Enqueue( input );
+
+			// Capture the NEW corrected state for this tick
+			var correctedState = CaptureState( input.Tick );
+			_stateHistory.Enqueue( correctedState );
 		}
 
 		_predicted?.OnReconcile( serverState, predictedState );
-		ClearHistoryBefore( serverState.Tick );
 	}
 
 	private void ClearHistoryBefore( int tick )

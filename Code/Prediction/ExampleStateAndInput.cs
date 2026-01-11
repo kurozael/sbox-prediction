@@ -30,8 +30,7 @@ public struct PlayerState : IPredictionState
 		if ( other is not PlayerState otherState )
 			return false;
 
-		return Position.AlmostEqual( otherState.Position, tolerance )
-		       && Rotation.AlmostEqual( otherState.Rotation, tolerance )
-		       && Velocity.AlmostEqual( otherState.Velocity, tolerance );
+		var positionDiff = (Position - otherState.Position).Length;
+		return positionDiff <= tolerance;
 	}
 }

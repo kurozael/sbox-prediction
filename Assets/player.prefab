@@ -16,8 +16,43 @@
     "OwnerTransfer": 1,
     "Components": [
       {
-        "__type": "Sandbox.CharacterController",
-        "__guid": "5b3de882-5599-4c5d-a4ac-180343ad38bf",
+        "__type": "Prediction.Example.ExamplePredictedPlayer",
+        "__guid": "bbe38f68-8eaf-4213-bde6-cc3db426c4d6",
+        "__enabled": true,
+        "Flags": 0,
+        "AirAcceleration": 0.5,
+        "CharacterController": null,
+        "Gravity": 800,
+        "GroundAcceleration": 10,
+        "GroundFriction": 8,
+        "JumpForce": 300,
+        "MoveSpeed": 200,
+        "OnComponentDestroy": null,
+        "OnComponentDisabled": null,
+        "OnComponentEnabled": null,
+        "OnComponentFixedUpdate": null,
+        "OnComponentStart": null,
+        "OnComponentUpdate": null
+      },
+      {
+        "__type": "Prediction.Example.PlayerPredictionController",
+        "__guid": "d0cf2d51-06f9-40d7-af47-f8c833fced10",
+        "__enabled": true,
+        "Flags": 0,
+        "HistorySize": 128,
+        "InterpolateRemote": true,
+        "InterpolationDelay": 0.1,
+        "OnComponentDestroy": null,
+        "OnComponentDisabled": null,
+        "OnComponentEnabled": null,
+        "OnComponentFixedUpdate": null,
+        "OnComponentStart": null,
+        "OnComponentUpdate": null,
+        "ReconciliationTolerance": 1
+      },
+      {
+        "__type": "Prediction.Example.CharacterController",
+        "__guid": "c3f526d8-bcdb-4599-80e4-fa4161e4127d",
         "__enabled": true,
         "Flags": 0,
         "Acceleration": 10,
@@ -34,49 +69,6 @@
         "Radius": 16,
         "StepHeight": 18,
         "UseCollisionRules": false
-      },
-      {
-        "__type": "Prediction.ExamplePredictedPlayer",
-        "__guid": "bbe38f68-8eaf-4213-bde6-cc3db426c4d6",
-        "__enabled": true,
-        "Flags": 0,
-        "CharacterController": {
-          "_type": "component",
-          "component_id": "5b3de882-5599-4c5d-a4ac-180343ad38bf",
-          "go": "e7f1f7ae-1362-4eeb-bd94-3627378c607f",
-          "component_type": "CharacterController"
-        },
-        "Gravity": 800,
-        "JumpForce": 300,
-        "MoveSpeed": 200,
-        "OnComponentDestroy": null,
-        "OnComponentDisabled": null,
-        "OnComponentEnabled": null,
-        "OnComponentFixedUpdate": null,
-        "OnComponentStart": null,
-        "OnComponentUpdate": null
-      },
-      {
-        "__type": "Prediction.PredictionController",
-        "__guid": "e4a450bf-ce1e-4137-8c98-77fdaf0a1c24",
-        "__enabled": true,
-        "Flags": 0,
-        "HistorySize": 128,
-        "InterpolateRemote": true,
-        "InterpolationDelay": 0.1,
-        "OnComponentDestroy": null,
-        "OnComponentDisabled": null,
-        "OnComponentEnabled": null,
-        "OnComponentFixedUpdate": null,
-        "OnComponentStart": null,
-        "OnComponentUpdate": null,
-        "ReconciliationSpeed": 10,
-        "ReconciliationTolerance": 0.1,
-        "SmoothReconciliation": true,
-        "VisualRoot": {
-          "_type": "gameobject",
-          "go": "91e93f93-93ad-4d7e-baf4-b3b2caa93d07"
-        }
       }
     ],
     "Children": [
