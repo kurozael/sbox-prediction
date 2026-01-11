@@ -6,7 +6,6 @@ namespace Prediction;
 /// <summary>
 /// Add this component to any GameObject that needs client-side prediction.
 /// Works with PredictionSystem for centralized tick management.
-/// Maintains separate simulation and visual transforms for smooth reconciliation.
 /// </summary>
 public sealed class PredictionController : Component
 {
@@ -23,16 +22,11 @@ public sealed class PredictionController : Component
 	public float ReconciliationTolerance { get; set; } = 0.1f;
 
 	/// <summary>
-	/// How fast to interpolate visuals toward simulation position (higher = faster correction).
+	/// How much of the correction to apply per reconciliation (0-1).
+	/// Lower values = smoother but slower corrections.
 	/// </summary>
-	[Property]
-	public float VisualInterpolationSpeed { get; set; } = 15f;
-
-	/// <summary>
-	/// Maximum distance the visual can lag behind simulation before snapping.
-	/// </summary>
-	[Property]
-	public float MaxVisualOffset { get; set; } = 2f;
+	[Property, Range( 0.1f, 1f )]
+	public float CorrectionBlend { get; set; } = 0.5f;
 
 	/// <summary>
 	/// Enable interpolation for remote players (non-predicted entities).
@@ -52,14 +46,6 @@ public sealed class PredictionController : Component
 	/// </summary>
 	[Sync( SyncFlags.FromHost )]
 	private Guid ControllerId { get; set; }
-
-	// Simulation transform (authoritative position after prediction/reconciliation)
-	private Vector3 _simulationPosition;
-	private Rotation _simulationRotation;
-
-	// Visual transform offset (for smooth interpolation during reconciliation)
-	private Vector3 _visualOffset;
-	private Rotation _visualRotationOffset;
 
 	// Input/state history
 	private readonly Queue<PredictionInput> _inputHistory = new();
@@ -88,16 +74,6 @@ public sealed class PredictionController : Component
 	/// Returns true if we are the host AND the controller (no prediction needed, we are authoritative).
 	/// </summary>
 	private bool IsHostController => Networking.IsHost && IsLocalController;
-
-	/// <summary>
-	/// The current simulation position (authoritative).
-	/// </summary>
-	public Vector3 SimulationPosition => _simulationPosition;
-
-	/// <summary>
-	/// The current simulation rotation (authoritative).
-	/// </summary>
-	public Rotation SimulationRotation => _simulationRotation;
 
 	/// <summary>
 	/// Set the controller of this predicted object. Call this on the host when spawning.
@@ -144,10 +120,6 @@ public sealed class PredictionController : Component
 		{
 			Log.Warning( $"PredictionController on {GameObject.Name} requires an IPredicted component!" );
 		}
-
-		// Initialize simulation transform to the current world transform
-		_simulationPosition = WorldPosition;
-		_simulationRotation = WorldRotation;
 
 		// Register with the prediction system
 		_system = Scene.GetSystem<PredictionSystem>();
@@ -230,34 +202,14 @@ public sealed class PredictionController : Component
 	}
 
 	/// <summary>
-	/// Called by PredictionSystem every frame to update visual interpolation.
+	/// Called by PredictionSystem every frame to update visuals.
 	/// </summary>
 	public void UpdateVisuals()
 	{
 		if ( !IsLocalController )
 		{
 			UpdateRemotePlayerInterpolation();
-			return;
 		}
-
-		// Interpolate visual offset toward zero (smooth out reconciliation)
-		if ( _visualOffset.LengthSquared > 0.0001f || _visualRotationOffset != Rotation.Identity )
-		{
-			var lerpSpeed = VisualInterpolationSpeed * Time.Delta;
-			_visualOffset = Vector3.Lerp( _visualOffset, Vector3.Zero, lerpSpeed );
-			_visualRotationOffset = Rotation.Lerp( _visualRotationOffset, Rotation.Identity, lerpSpeed );
-
-			// Snap if close enough
-			if ( _visualOffset.Length < 0.001f )
-			{
-				_visualOffset = Vector3.Zero;
-				_visualRotationOffset = Rotation.Identity;
-			}
-		}
-
-		// Apply visual transform (simulation + offset for smooth rendering)
-		WorldPosition = _simulationPosition + _visualOffset;
-		WorldRotation = _simulationRotation * _visualRotationOffset;
 	}
 
 	private void SimulateHostController( int currentTick )
@@ -286,17 +238,10 @@ public sealed class PredictionController : Component
 
 	private void SimulateInternal( PredictionInput input )
 	{
-		WorldPosition = _simulationPosition;
-		WorldRotation = _simulationRotation;
-
 		using ( Time.Scope( Time.Now, _system?.FixedDelta ?? Scene.FixedDelta ) )
 		{
 			_predicted.OnSimulate( input );
 		}
-
-		// Capture the result back to simulation transform
-		_simulationPosition = WorldPosition;
-		_simulationRotation = WorldRotation;
 	}
 
 	private void UpdateRemotePlayerInterpolation()
@@ -359,8 +304,8 @@ public sealed class PredictionController : Component
 		{
 			Tick = tick,
 			Time = Time.Now,
-			Position = _simulationPosition,
-			Rotation = _simulationRotation
+			Position = WorldPosition,
+			Rotation = WorldRotation
 		};
 
 		_predicted?.CaptureState( ref state );
@@ -370,13 +315,32 @@ public sealed class PredictionController : Component
 
 	private void ApplyState( PredictionState state )
 	{
-		_simulationPosition = state.Position;
-		_simulationRotation = state.Rotation;
-
-		WorldPosition = _simulationPosition;
-		WorldRotation = _simulationRotation;
+		WorldPosition = state.Position;
+		WorldRotation = state.Rotation;
 
 		_predicted?.ApplyState( state );
+	}
+
+	/// <summary>
+	/// Blend current state toward target state by the given amount.
+	/// </summary>
+	private void BlendTowardState( PredictionState target, float blend )
+	{
+		WorldPosition = Vector3.Lerp( WorldPosition, target.Position, blend );
+		WorldRotation = Rotation.Lerp( WorldRotation, target.Rotation, blend );
+
+		// Blend velocity too
+		var currentState = new PredictionState();
+		_predicted?.CaptureState( ref currentState );
+
+		var blendedState = target with
+		{
+			Position = WorldPosition,
+			Rotation = WorldRotation,
+			Velocity = Vector3.Lerp( currentState.Velocity, target.Velocity, blend )
+		};
+
+		_predicted?.ApplyState( blendedState );
 	}
 
 	[Rpc.Broadcast( NetFlags.Unreliable )]
@@ -450,6 +414,7 @@ public sealed class PredictionController : Component
 		// Track acknowledged tick
 		_system?.AcknowledgeTick( serverState.Tick );
 
+		// Check if prediction matches server
 		if ( predictedState.Value.Equals( serverState, ReconciliationTolerance ) )
 		{
 			// Prediction was correct, just clean up old history
@@ -458,18 +423,28 @@ public sealed class PredictionController : Component
 		}
 
 		// Prediction was wrong, need to reconcile
-		Reconcile( serverState );
+		Reconcile( serverState, predictedState.Value );
 	}
 
-	private void Reconcile( PredictionState serverState )
+	private void Reconcile( PredictionState serverState, PredictionState predictedState )
 	{
-		// Calculate the visual offset before reconciliation
-		// This represents where we *were* visually vs where we *should* be
-		var oldVisualPosition = _simulationPosition + _visualOffset;
-		var oldVisualRotation = _simulationRotation * _visualRotationOffset;
+		// Instead of snapping to the server state, blend toward it
+		// This creates a "soft" correction that reduces jitter
 
-		// Apply the authoritative server state
-		ApplyState( serverState );
+		// Calculate how wrong we were
+		var positionError = (serverState.Position - predictedState.Position).Length;
+
+		// For large errors, use full correction. For small errors, blend gently.
+		var blend = CorrectionBlend;
+		if ( positionError < 0.5f )
+		{
+			// Small error - use gentler correction
+			blend *= 0.5f;
+		}
+
+		// Blend the server state into our current predicted state at that tick
+		// Then replay inputs from there
+		BlendTowardState( serverState, blend );
 
 		// Replay all inputs after the server state
 		var inputsToReplay = new List<PredictionInput>();
@@ -484,19 +459,7 @@ public sealed class PredictionController : Component
 			SimulateInternal( input );
 		}
 
-		// Now _simulationPosition is where we should be after replay
-		// Calculate new visual offset to smoothly interpolate from old visual position
-		_visualOffset = oldVisualPosition - _simulationPosition;
-		_visualRotationOffset = _simulationRotation.Inverse * oldVisualRotation;
-
-		// Clamp the offset if it's too large (snap instead of crazy interpolation)
-		if ( _visualOffset.Length > MaxVisualOffset )
-		{
-			_visualOffset = Vector3.Zero;
-			_visualRotationOffset = Rotation.Identity;
-		}
-
-		_predicted.OnReconcile();
+		_predicted?.OnReconcile();
 
 		ClearHistoryBefore( serverState.Tick );
 	}

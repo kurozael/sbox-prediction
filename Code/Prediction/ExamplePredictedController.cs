@@ -24,6 +24,14 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 		CharacterController ??= Components.Get<CharacterController>();
 	}
 
+	protected override void OnUpdate()
+	{
+		Scene.Camera.WorldPosition = WorldPosition + Vector3.Up * 100f + Vector3.Backward * 400f;
+		Scene.Camera.WorldRotation = Rotation.LookAt( WorldPosition - Scene.Camera.WorldPosition, Vector3.Up );
+
+		base.OnUpdate();
+	}
+
 	void IPredicted.CaptureState( ref PredictionState state )
 	{
 		state.Velocity = _velocity;

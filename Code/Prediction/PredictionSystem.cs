@@ -164,7 +164,7 @@ public sealed class PredictionSystem : GameObjectSystem<PredictionSystem>
 		{
 			foreach ( var controller in _controllers )
 			{
-				if ( controller == null || !controller.IsValid )
+				if ( !controller.IsValid() )
 					continue;
 
 				if ( controller.IsLocalController )
