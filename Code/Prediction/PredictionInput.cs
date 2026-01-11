@@ -13,6 +13,4 @@ public struct PredictionInput
 	public bool Jump;
 	public bool Attack;
 	public bool Use;
-
-	// Add more input fields as needed for your game
 }

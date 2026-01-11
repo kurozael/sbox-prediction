@@ -8,17 +8,10 @@ namespace Prediction;
 /// </summary>
 public sealed class ExamplePredictedPlayer : Component, IPredicted
 {
-	[Property]
-	public float MoveSpeed { get; set; } = 200f;
-
-	[Property]
-	public float JumpForce { get; set; } = 300f;
-
-	[Property]
-	public float Gravity { get; set; } = 800f;
-
-	[Property]
-	public CharacterController CharacterController { get; set; }
+	[Property] public float MoveSpeed { get; set; } = 200f;
+	[Property] public float JumpForce { get; set; } = 300f;
+	[Property] public float Gravity { get; set; } = 800f;
+	[Property] public CharacterController CharacterController { get; set; }
 
 	private PredictionController _prediction;
 	private Vector3 _velocity;
@@ -28,74 +21,53 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 	{
 		_prediction = Components.Get<PredictionController>();
 		CharacterController ??= Components.Get<CharacterController>();
-
-		// Setup is now handled by the spawning code which calls SetController()
-		// The PredictionController will handle NoTransformSync automatically
-	}
-
-	protected override void OnUpdate()
-	{
-		// Only the controlling client builds input
-		if ( _prediction == null || !_prediction.IsLocalController )
-			return;
-
-		// Build input from player's actual input devices
-		_prediction.BuildInput();
-
-		// Or build custom input:
-		// _prediction?.SetInput( new PredictionInput
-		// {
-		//     MoveDirection = Input.AnalogMove,
-		//     ViewAngles = Input.AnalogLook,
-		//     Jump = Input.Down( "jump" )
-		// } );
 	}
 
 	void IPredicted.CaptureState( ref PredictionState state )
 	{
-
+		state.Velocity = _velocity;
+		state.IsGrounded = _isGrounded;
 	}
 
 	void IPredicted.ApplyState( PredictionState state )
 	{
+		_velocity = state.Velocity;
+		_isGrounded = state.IsGrounded;
 
+		CharacterController?.Velocity = _velocity;
 	}
 
 	void IPredicted.BuildInput( ref PredictionInput input )
 	{
-
+		input.MoveDirection = Input.AnalogMove;
+		input.ViewAngles = Input.AnalogLook;
+		input.Run = Input.Down( "run" );
+		input.Jump = Input.Down( "jump" );
+		input.Attack = Input.Down( "attack1" );
+		input.Use = Input.Down( "use" );
 	}
 
-	/// <summary>
-	/// This is called by the prediction system for simulation.
-	/// Runs on client for prediction, and on server for authority.
-	/// Must be deterministic - same input should produce same output!
-	/// </summary>
 	void IPredicted.OnSimulate( PredictionInput input )
 	{
 		if ( CharacterController == null )
 			return;
 
-		// Check ground state
+		// Grounded comes from the controller's collision state.
 		_isGrounded = CharacterController.IsOnGround;
 
 		var moveSpeed = MoveSpeed;
 		if ( input.Run ) moveSpeed *= 4f;
 
-		// Build wish velocity from input
 		var wishDir = input.MoveDirection.Normal;
 		var wishVelocity = wishDir * moveSpeed;
 
-		// Transform to world space based on view angles
 		var viewRotation = Rotation.FromYaw( input.ViewAngles.yaw );
 		wishVelocity = viewRotation * wishVelocity;
 
-		// Apply movement
 		if ( _isGrounded )
 		{
 			_velocity = wishVelocity;
 
-			// Handle jump
 			if ( input.Jump )
 			{
 				_velocity += Vector3.Up * JumpForce;
@@ -104,46 +76,22 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 		}
 		else
 		{
-			// Air control (reduced)
 			_velocity += wishVelocity * 0.1f * Time.Delta;
-
-			// Apply gravity
 			_velocity += Vector3.Down * Gravity * Time.Delta;
 		}
 
-		// Move the character
 		CharacterController.Velocity = _velocity;
 		CharacterController.Move();
 
-		// Update velocity from the character controller (handles collisions)
 		_velocity = CharacterController.Velocity;
+		_isGrounded = CharacterController.IsOnGround;
 	}
 
-	/// <summary>
-	/// Called when the server corrects our prediction.
-	/// Use this to reset any visual effects or sounds that shouldn't repeat.
-	/// </summary>
 	void IPredicted.OnReconcile()
 	{
-		// Example: You might want to:
-		// - Cancel footstep sounds that were predicted
-		// - Reset particle effects
-		// - Clear jump animations if we didn't actually jump
-
 		Log.Info( "Reconciliation occurred - prediction was corrected" );
 	}
 
-	/// <summary>
-	/// For rendering, use the visual position to get smooth reconciliation.
-	/// </summary>
-	public Vector3 GetRenderPosition()
-	{
-		return _prediction?.GetVisualPosition() ?? WorldPosition;
-	}
-
-	/// <summary>
-	/// Example: How to set up a predicted player on the host.
-	/// </summary>
 	public static void SetupPrediction( GameObject gameObject, Connection controller )
 	{
 		if ( !Networking.IsHost )
@@ -152,11 +100,9 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 			return;
 		}
 
-		// Add required components
 		var prediction = gameObject.Components.GetOrCreate<PredictionController>();
 		gameObject.Components.GetOrCreate<ExamplePredictedPlayer>();
 
-		// Set the controller - this syncs to all clients
 		prediction.SetController( controller );
 	}
 }

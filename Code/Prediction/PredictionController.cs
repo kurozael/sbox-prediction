@@ -22,12 +22,6 @@ public sealed class PredictionController : Component
 	public float ReconciliationTolerance { get; set; } = 0.1f;
 
 	/// <summary>
-	/// Enable smooth interpolation to hide reconciliation snaps.
-	/// </summary>
-	[Property]
-	public bool SmoothReconciliation { get; set; } = true;
-
-	/// <summary>
 	/// How fast to interpolate after reconciliation (higher = faster correction).
 	/// </summary>
 	[Property]
@@ -66,7 +60,6 @@ public sealed class PredictionController : Component
 	private int _currentTick;
 	private int _lastAcknowledgedTick;
 	private int _lastQueuedInputTick;
-	private Vector3 _reconciliationOffset;
 	private IPredicted _predicted;
 	private PredictionInput? _previousInput;
 	private PredictionInput _pendingInput;
@@ -118,7 +111,9 @@ public sealed class PredictionController : Component
 
 	protected override void OnAwake()
 	{
+		GameObject.Flags |= GameObjectFlags.NoInterpolation;
 		Network.Flags |= NetworkFlags.NoTransformSync;
+		Network.Flags |= NetworkFlags.NoInterpolation;
 	}
 
 	protected override void OnStart()
@@ -133,19 +128,6 @@ public sealed class PredictionController : Component
 
 	protected override void OnUpdate()
 	{
-		// Reconciliation smoothing runs every frame
-		if ( IsLocalController && !IsHostController )
-		{
-			if ( SmoothReconciliation && _reconciliationOffset.LengthSquared > 0.0001f )
-			{
-				_reconciliationOffset = Vector3.Lerp( _reconciliationOffset, Vector3.Zero, Time.Delta * ReconciliationSpeed );
-			}
-			else
-			{
-				_reconciliationOffset = Vector3.Zero;
-			}
-		}
-
 		// Remote player interpolation
 		if ( !IsLocalController )
 		{
@@ -187,24 +169,11 @@ public sealed class PredictionController : Component
 		_pendingInput.Tick = _currentTick;
 	}
 
-	/// <summary>
-	/// Build input from common sources.
-	/// </summary>
-	public void BuildInput()
-	{
-		_pendingInput = new PredictionInput
-		{
-			Tick = _currentTick,
-			MoveDirection = Input.AnalogMove,
-			ViewAngles = Input.AnalogLook,
-			Jump = Input.Down( "jump" ),
-			Attack = Input.Down( "attack1" ),
-			Use = Input.Down( "use" )
-		};
-	}
-
 	private void SimulateHostController()
 	{
+		_pendingInput.Tick = _currentTick;
+		_predicted.BuildInput( ref _pendingInput );
+
 		using ( Time.Scope( Time.Now, FixedDelta ) )
 		{
 			_predicted.OnSimulate( _pendingInput );
@@ -218,6 +187,9 @@ public sealed class PredictionController : Component
 
 	private void SimulateClientController()
 	{
+		_pendingInput.Tick = _currentTick;
+		_predicted.BuildInput( ref _pendingInput );
+
 		using ( Time.Scope( Time.Now, FixedDelta ) )
 		{
 			_predicted.OnSimulate( _pendingInput );
@@ -276,7 +248,10 @@ public sealed class PredictionController : Component
 				}
 			}
 
-			BroadcastStateToClients( serverState );
+			using ( Rpc.FilterExclude( _controllerConnection ) )
+			{
+				BroadcastStateToClients( serverState );
+			}
 		}
 	}
 
@@ -414,11 +389,11 @@ public sealed class PredictionController : Component
 		PredictionState? predictedState = null;
 		foreach ( var state in _stateHistory )
 		{
-			if ( state.Tick == serverState.Tick )
-			{
-				predictedState = state;
-				break;
-			}
+			if ( state.Tick != serverState.Tick )
+				continue;
+
+			predictedState = state;
+			break;
 		}
 
 		if ( !predictedState.HasValue )
@@ -434,8 +409,6 @@ public sealed class PredictionController : Component
 
 	private void Reconcile( PredictionState serverState )
 	{
-		var previousPosition = WorldPosition;
-
 		ApplyState( serverState );
 
 		var inputsToReplay = new List<PredictionInput>();
@@ -453,11 +426,6 @@ public sealed class PredictionController : Component
 			}
 		}
 
-		if ( SmoothReconciliation )
-		{
-			_reconciliationOffset = previousPosition - WorldPosition;
-		}
-
 		_predicted.OnReconcile();
 
 		ClearHistoryBefore( serverState.Tick );
@@ -471,16 +439,4 @@ public sealed class PredictionController : Component
 		while ( _stateHistory.Count > 0 && _stateHistory.Peek().Tick <= tick )
 			_stateHistory.Dequeue();
 	}
-
-	/// <summary>
-	/// Get the visual position including reconciliation smoothing offset.
-	/// </summary>
-	public Vector3 GetVisualPosition()
-	{
-		return WorldPosition + _reconciliationOffset;
-	}
-
-	public int CurrentTick => _currentTick;
-	public int LastAcknowledgedTick => _lastAcknowledgedTick;
-	public int TicksAhead => _currentTick - _lastAcknowledgedTick;
 }

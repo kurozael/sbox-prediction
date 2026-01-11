@@ -7,6 +7,7 @@ public struct PredictionState
 {
 	public int Tick;
 	public float Time;
+	public bool IsGrounded;
 	public Vector3 Position;
 	public Rotation Rotation;
 	public Vector3 Velocity;
@@ -15,7 +16,8 @@ public struct PredictionState
 
 	public readonly bool Equals( PredictionState other, float tolerance = 0.01f )
 	{
-		return Position.Distance( other.Position ) < tolerance
-		       && Velocity.Distance( other.Velocity ) < tolerance;
+		return Position.AlmostEqual( other.Position, tolerance)
+		       && Rotation.AlmostEqual( other.Rotation, tolerance )
+		       && Velocity.AlmostEqual( other.Velocity, tolerance );
 	}
 }

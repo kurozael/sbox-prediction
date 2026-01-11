@@ -34,6 +34,49 @@
         "Radius": 16,
         "StepHeight": 18,
         "UseCollisionRules": false
+      },
+      {
+        "__type": "Prediction.ExamplePredictedPlayer",
+        "__guid": "bbe38f68-8eaf-4213-bde6-cc3db426c4d6",
+        "__enabled": true,
+        "Flags": 0,
+        "CharacterController": {
+          "_type": "component",
+          "component_id": "5b3de882-5599-4c5d-a4ac-180343ad38bf",
+          "go": "e7f1f7ae-1362-4eeb-bd94-3627378c607f",
+          "component_type": "CharacterController"
+        },
+        "Gravity": 800,
+        "JumpForce": 300,
+        "MoveSpeed": 200,
+        "OnComponentDestroy": null,
+        "OnComponentDisabled": null,
+        "OnComponentEnabled": null,
+        "OnComponentFixedUpdate": null,
+        "OnComponentStart": null,
+        "OnComponentUpdate": null
+      },
+      {
+        "__type": "Prediction.PredictionController",
+        "__guid": "e4a450bf-ce1e-4137-8c98-77fdaf0a1c24",
+        "__enabled": true,
+        "Flags": 0,
+        "HistorySize": 128,
+        "InterpolateRemote": true,
+        "InterpolationDelay": 0.1,
+        "OnComponentDestroy": null,
+        "OnComponentDisabled": null,
+        "OnComponentEnabled": null,
+        "OnComponentFixedUpdate": null,
+        "OnComponentStart": null,
+        "OnComponentUpdate": null,
+        "ReconciliationSpeed": 10,
+        "ReconciliationTolerance": 0.1,
+        "SmoothReconciliation": true,
+        "VisualRoot": {
+          "_type": "gameobject",
+          "go": "91e93f93-93ad-4d7e-baf4-b3b2caa93d07"
+        }
       }
     ],
     "Children": [
