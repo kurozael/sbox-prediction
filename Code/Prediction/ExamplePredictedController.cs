@@ -1,12 +1,20 @@
 using System;
 
-namespace Prediction;
+namespace Prediction.Example;
+
+/// <summary>
+/// Example concrete PredictionController for the player.
+/// You need one of these per input/state type pair.
+/// </summary>
+public sealed class PlayerPredictionController : PredictionController<PlayerInput, PlayerState>
+{
+}
 
 /// <summary>
 /// Example player controller demonstrating how to use the prediction system.
-/// This component should be on the same GameObject as PredictionController.
+/// This component should be on the same GameObject as PlayerPredictionController.
 /// </summary>
-public sealed class ExamplePredictedPlayer : Component, IPredicted
+public sealed class ExamplePredictedPlayer : Component, IPredicted<PlayerInput, PlayerState>
 {
 	[Property] public float MoveSpeed { get; set; } = 200f;
 	[Property] public float JumpForce { get; set; } = 300f;
@@ -26,30 +34,24 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 
 	protected override void OnUpdate()
 	{
-		Scene.Camera.WorldPosition = WorldPosition + Vector3.Up * 100f + Vector3.Backward * 400f;
-		Scene.Camera.WorldRotation = Rotation.LookAt( WorldPosition - Scene.Camera.WorldPosition, Vector3.Up );
-
-		base.OnUpdate();
+		//Scene.Camera.WorldPosition = WorldPosition + Vector3.Up * 100f + Vector3.Backward * 400f;
+		//Scene.Camera.WorldRotation = Rotation.LookAt( WorldPosition - Scene.Camera.WorldPosition, Vector3.Up );
 	}
 
-	void IPredicted.CaptureState( ref PredictionState state )
+	void IPredicted<PlayerInput, PlayerState>.WriteState( ref PlayerState state )
 	{
 		state.Velocity = _velocity;
 		state.IsGrounded = _isGrounded;
 	}
 
-	void IPredicted.ApplyState( PredictionState state )
+	void IPredicted<PlayerInput, PlayerState>.ReadState( PlayerState state )
 	{
 		_velocity = state.Velocity;
 		_isGrounded = state.IsGrounded;
-
-		if ( CharacterController != null )
-		{
-			CharacterController.Velocity = _velocity;
-		}
+		CharacterController?.Velocity = _velocity;
 	}
 
-	void IPredicted.BuildInput( ref PredictionInput input )
+	void IPredicted<PlayerInput, PlayerState>.BuildInput( ref PlayerInput input )
 	{
 		input.MoveDirection = Input.AnalogMove;
 		input.ViewAngles = Input.AnalogLook;
@@ -59,7 +61,7 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 		input.Use = Input.Down( "use" );
 	}
 
-	void IPredicted.OnSimulate( PredictionInput input )
+	void IPredicted<PlayerInput, PlayerState>.OnSimulate( PlayerInput input )
 	{
 		if ( CharacterController == null )
 			return;
@@ -90,7 +92,7 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 				_velocity.y = 0;
 			}
 
-			// Accelerate toward wish velocity
+			// Speed up toward wish velocity
 			var currentSpeed = Vector3.Dot( _velocity, wishVelocity.Normal );
 			var addSpeed = moveSpeed - currentSpeed;
 
@@ -130,11 +132,14 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 		_isGrounded = CharacterController.IsOnGround;
 	}
 
-	void IPredicted.OnReconcile()
+	void IPredicted<PlayerInput, PlayerState>.OnReconcile( PlayerState serverState, PlayerState predictedState )
 	{
 		Log.Info( "Reconciliation occurred - prediction was corrected" );
 	}
 
+	/// <summary>
+	/// Helper to set up prediction on a player GameObject.
+	/// </summary>
 	public static void SetupPrediction( GameObject gameObject, Connection controller )
 	{
 		if ( !Networking.IsHost )
@@ -143,7 +148,7 @@ public sealed class ExamplePredictedPlayer : Component, IPredicted
 			return;
 		}
 
-		var prediction = gameObject.Components.GetOrCreate<PredictionController>();
+		var prediction = gameObject.Components.GetOrCreate<PlayerPredictionController>();
 		gameObject.Components.GetOrCreate<ExamplePredictedPlayer>();
 
 		prediction.SetController( controller );

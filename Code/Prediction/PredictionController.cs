@@ -1,5 +1,4 @@
 using System;
-using Sandbox;
 
 namespace Prediction;
 
@@ -7,7 +6,11 @@ namespace Prediction;
 /// Add this component to any GameObject that needs client-side prediction.
 /// Works with PredictionSystem for centralized tick management.
 /// </summary>
-public sealed class PredictionController : Component
+/// <typeparam name="TInput">Your custom input struct implementing <see cref="IPredictionInput"/></typeparam>
+/// <typeparam name="TState">Your custom state struct implementing <see cref="IPredictionState"/></typeparam>
+public abstract class PredictionController<TInput, TState> : PredictionControllerBase
+	where TInput : struct, IPredictionInput
+	where TState : struct, IPredictionState
 {
 	/// <summary>
 	/// How many ticks of input/state history to keep for reconciliation.
@@ -19,14 +22,7 @@ public sealed class PredictionController : Component
 	/// Tolerance for position mismatch before triggering reconciliation.
 	/// </summary>
 	[Property]
-	public float ReconciliationTolerance { get; set; } = 0.1f;
-
-	/// <summary>
-	/// How much of the correction to apply per reconciliation (0-1).
-	/// Lower values = smoother but slower corrections.
-	/// </summary>
-	[Property, Range( 0.1f, 1f )]
-	public float CorrectionBlend { get; set; } = 0.5f;
+	public float ReconciliationTolerance { get; set; } = 1.0f;
 
 	/// <summary>
 	/// Enable interpolation for remote players (non-predicted entities).
@@ -48,32 +44,38 @@ public sealed class PredictionController : Component
 	private Guid ControllerId { get; set; }
 
 	// Input/state history
-	private readonly Queue<PredictionInput> _inputHistory = new();
-	private readonly Queue<PredictionState> _stateHistory = new();
-	private readonly Queue<PredictionState> _remoteStateBuffer = new();
+	private readonly Queue<TInput> _inputHistory = new();
+	private readonly Queue<TState> _stateHistory = new();
+	private readonly Queue<TState> _remoteStateBuffer = new();
 
 	// Server-side input queue
-	private readonly Queue<PredictionInput> _serverInputQueue = new();
+	private readonly Queue<TInput> _serverInputQueue = new();
 	private Connection _controllerConnection;
 	private int _serverTick;
-	private PredictionInput _lastServerInput;
+	private TInput _lastServerInput;
 
 	private int _lastQueuedInputTick;
-	private IPredicted _predicted;
-	private PredictionInput? _previousInput;
-	private PredictionInput _pendingInput;
+	private int _lastReconciledTick;
+	private IPredicted<TInput, TState> _predicted;
+	private TInput? _previousInput;
+	private TInput _pendingInput;
 
 	private PredictionSystem _system;
 
 	/// <summary>
 	/// Returns true if the local client is the controller of this predicted object.
 	/// </summary>
-	public bool IsLocalController => ControllerId != Guid.Empty && ControllerId == Connection.Local?.Id;
+	public override bool IsLocalController => ControllerId != Guid.Empty && ControllerId == Connection.Local?.Id;
 
 	/// <summary>
 	/// Returns true if we are the host AND the controller (no prediction needed, we are authoritative).
 	/// </summary>
 	private bool IsHostController => Networking.IsHost && IsLocalController;
+
+	// Base class implementations for PredictionSystem
+	internal override void ProcessServerInputQueueInternal() => ProcessServerInputQueue();
+	internal override void SimulateInternal() => Simulate();
+	internal override void UpdateInterpolationInternal() => UpdateInterpolation();
 
 	/// <summary>
 	/// Set the controller of this predicted object. Call this on the host when spawning.
@@ -114,11 +116,11 @@ public sealed class PredictionController : Component
 
 	protected override void OnStart()
 	{
-		_predicted = Components.Get<IPredicted>( FindMode.EverythingInSelf );
+		_predicted = Components.Get<IPredicted<TInput, TState>>( FindMode.EverythingInSelf );
 
 		if ( _predicted == null )
 		{
-			Log.Warning( $"PredictionController on {GameObject.Name} requires an IPredicted component!" );
+			Log.Warning( $"PredictionController on {GameObject.Name} requires an IPredicted<{typeof( TInput ).Name}, {typeof( TState ).Name}> component!" );
 		}
 
 		// Register with the prediction system
@@ -134,7 +136,7 @@ public sealed class PredictionController : Component
 	/// <summary>
 	/// Called by PredictionSystem to process server input queue (host only, remote controllers).
 	/// </summary>
-	public void ProcessServerInputQueue()
+	private void ProcessServerInputQueue()
 	{
 		if ( _predicted == null )
 			return;
@@ -184,7 +186,7 @@ public sealed class PredictionController : Component
 	/// <summary>
 	/// Called by PredictionSystem to simulate (local controllers only).
 	/// </summary>
-	public void Simulate()
+	private void Simulate()
 	{
 		if ( _predicted == null )
 			return;
@@ -204,7 +206,7 @@ public sealed class PredictionController : Component
 	/// <summary>
 	/// Called by PredictionSystem every frame to update visuals.
 	/// </summary>
-	public void UpdateVisuals()
+	private void UpdateInterpolation()
 	{
 		if ( !IsLocalController )
 		{
@@ -236,9 +238,11 @@ public sealed class PredictionController : Component
 		_previousInput = _pendingInput;
 	}
 
-	private void SimulateInternal( PredictionInput input )
+	private void SimulateInternal( TInput input )
 	{
-		using ( Time.Scope( Time.Now, _system?.FixedDelta ?? Scene.FixedDelta ) )
+		var dt = _system?.TickInterval ?? (1f / 60f);
+
+		using ( Time.Scope( Time.Now, dt ) )
 		{
 			_predicted.OnSimulate( input );
 		}
@@ -286,7 +290,7 @@ public sealed class PredictionController : Component
 		WorldRotation = Rotation.Lerp( from.Rotation, to.Rotation, t );
 	}
 
-	private void StoreHistory( PredictionInput input )
+	private void StoreHistory( TInput input )
 	{
 		_inputHistory.Enqueue( input );
 		while ( _inputHistory.Count > HistorySize )
@@ -298,9 +302,9 @@ public sealed class PredictionController : Component
 			_stateHistory.Dequeue();
 	}
 
-	private PredictionState CaptureState( int tick )
+	private TState CaptureState( int tick )
 	{
-		var state = new PredictionState
+		var state = new TState
 		{
 			Tick = tick,
 			Time = Time.Now,
@@ -308,43 +312,20 @@ public sealed class PredictionController : Component
 			Rotation = WorldRotation
 		};
 
-		_predicted?.CaptureState( ref state );
-
+		_predicted?.WriteState( ref state );
 		return state;
 	}
 
-	private void ApplyState( PredictionState state )
+	private void ApplyState( TState state )
 	{
 		WorldPosition = state.Position;
 		WorldRotation = state.Rotation;
 
-		_predicted?.ApplyState( state );
+		_predicted?.ReadState( state );
 	}
 
-	/// <summary>
-	/// Blend current state toward target state by the given amount.
-	/// </summary>
-	private void BlendTowardState( PredictionState target, float blend )
-	{
-		WorldPosition = Vector3.Lerp( WorldPosition, target.Position, blend );
-		WorldRotation = Rotation.Lerp( WorldRotation, target.Rotation, blend );
-
-		// Blend velocity too
-		var currentState = new PredictionState();
-		_predicted?.CaptureState( ref currentState );
-
-		var blendedState = target with
-		{
-			Position = WorldPosition,
-			Rotation = WorldRotation,
-			Velocity = Vector3.Lerp( currentState.Velocity, target.Velocity, blend )
-		};
-
-		_predicted?.ApplyState( blendedState );
-	}
-
-	[Rpc.Broadcast( NetFlags.Unreliable )]
-	private void BroadcastStateToClients( PredictionState state )
+	[Rpc.Broadcast( NetFlags.UnreliableNoDelay )]
+	private void BroadcastStateToClients( TState state )
 	{
 		if ( Networking.IsHost )
 			return;
@@ -364,8 +345,8 @@ public sealed class PredictionController : Component
 			_remoteStateBuffer.Dequeue();
 	}
 
-	[Rpc.Host( NetFlags.Unreliable )]
-	private void SendInputToServer( PredictionInput input, PredictionInput? previousInput )
+	[Rpc.Host( NetFlags.UnreliableNoDelay )]
+	private void SendInputToServer( TInput input, TInput? previousInput )
 	{
 		if ( !Networking.IsHost )
 			return;
@@ -391,14 +372,18 @@ public sealed class PredictionController : Component
 			_serverInputQueue.Dequeue();
 	}
 
-	[Rpc.Broadcast( NetFlags.Unreliable )]
-	private void SendServerStateToController( PredictionState serverState )
+	[Rpc.Broadcast( NetFlags.UnreliableNoDelay )]
+	private void SendServerStateToController( TState serverState )
 	{
 		if ( !IsLocalController || Networking.IsHost )
 			return;
 
+		// Ignore old states - only process newer ticks
+		if ( serverState.Tick <= _lastReconciledTick )
+			return;
+
 		// Find our predicted state for this tick
-		PredictionState? predictedState = null;
+		TState? predictedState = null;
 		foreach ( var state in _stateHistory )
 		{
 			if ( state.Tick != serverState.Tick )
@@ -414,40 +399,24 @@ public sealed class PredictionController : Component
 		// Track acknowledged tick
 		_system?.AcknowledgeTick( serverState.Tick );
 
-		// Check if prediction matches server
-		if ( predictedState.Value.Equals( serverState, ReconciliationTolerance ) )
-		{
-			// Prediction was correct, just clean up old history
-			ClearHistoryBefore( serverState.Tick );
-			return;
-		}
+		// Always clear old history
+		ClearHistoryBefore( serverState.Tick );
 
-		// Prediction was wrong, need to reconcile
+		_lastReconciledTick = serverState.Tick;
+
+		if ( predictedState.Value.Equals( serverState, ReconciliationTolerance ) )
+			return;
+
 		Reconcile( serverState, predictedState.Value );
 	}
 
-	private void Reconcile( PredictionState serverState, PredictionState predictedState )
+	private void Reconcile( TState serverState, TState predictedState )
 	{
-		// Instead of snapping to the server state, blend toward it
-		// This creates a "soft" correction that reduces jitter
-
-		// Calculate how wrong we were
-		var positionError = (serverState.Position - predictedState.Position).Length;
-
-		// For large errors, use full correction. For small errors, blend gently.
-		var blend = CorrectionBlend;
-		if ( positionError < 0.5f )
-		{
-			// Small error - use gentler correction
-			blend *= 0.5f;
-		}
-
-		// Blend the server state into our current predicted state at that tick
-		// Then replay inputs from there
-		BlendTowardState( serverState, blend );
+		// Snap to server state
+		ApplyState( serverState );
 
 		// Replay all inputs after the server state
-		var inputsToReplay = new List<PredictionInput>();
+		var inputsToReplay = new List<TInput>();
 		foreach ( var input in _inputHistory )
 		{
 			if ( input.Tick > serverState.Tick )
@@ -459,8 +428,7 @@ public sealed class PredictionController : Component
 			SimulateInternal( input );
 		}
 
-		_predicted?.OnReconcile();
-
+		_predicted?.OnReconcile( serverState, predictedState );
 		ClearHistoryBefore( serverState.Tick );
 	}
 

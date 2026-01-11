@@ -4,8 +4,19 @@ using Sandbox;
 namespace Prediction;
 
 /// <summary>
+/// Non-generic base class for PredictionController so the system can track all controllers.
+/// </summary>
+public abstract class PredictionControllerBase : Component
+{
+	public abstract bool IsLocalController { get; }
+	internal abstract void ProcessServerInputQueueInternal();
+	internal abstract void SimulateInternal();
+	internal abstract void UpdateInterpolationInternal();
+}
+
+/// <summary>
 /// Centralized system for managing client-side prediction across all predicted entities.
-/// Handles global tick synchronization and coordinates simulation/reconciliation.
+/// Uses manual tick accumulation in Update instead of FixedUpdate for more control.
 /// </summary>
 public sealed class PredictionSystem : GameObjectSystem<PredictionSystem>
 {
@@ -41,26 +52,35 @@ public sealed class PredictionSystem : GameObjectSystem<PredictionSystem>
 	public int MaxTickDrift { get; set; } = 30;
 
 	/// <summary>
-	/// Fixed timestep for simulation.
+	/// Fixed timestep for simulation in seconds.
 	/// </summary>
-	public float FixedDelta => Scene.FixedDelta;
+	public float TickInterval { get; set; } = 1f / 30f;
+
+	/// <summary>
+	/// Maximum ticks to simulate per frame to prevent spiral of death.
+	/// </summary>
+	public int MaxTicksPerFrame { get; set; } = 5;
+
+	/// <summary>
+	/// Accumulated time since last tick.
+	/// </summary>
+	private float _accumulator;
 
 	/// <summary>
 	/// All registered prediction controllers.
 	/// </summary>
-	private readonly List<PredictionController> _controllers = new();
+	private readonly List<PredictionControllerBase> _controllers = new();
 
 	public PredictionSystem( Scene scene ) : base( scene )
 	{
-		Listen( Stage.StartFixedUpdate, -100, OnPreFixedUpdate, "PredictionSystem.PreFixedUpdate" );
-		Listen( Stage.FinishFixedUpdate, 100, OnPostFixedUpdate, "PredictionSystem.PostFixedUpdate" );
 		Listen( Stage.StartUpdate, -100, OnPreUpdate, "PredictionSystem.PreUpdate" );
+		Listen( Stage.FinishUpdate, 100, OnPostUpdate, "PredictionSystem.PostUpdate" );
 	}
 
 	/// <summary>
 	/// Register a controller with the system.
 	/// </summary>
-	public void Register( PredictionController controller )
+	public void Register( PredictionControllerBase controller )
 	{
 		if ( !_controllers.Contains( controller ) )
 		{
@@ -71,7 +91,7 @@ public sealed class PredictionSystem : GameObjectSystem<PredictionSystem>
 	/// <summary>
 	/// Unregister a controller from the system.
 	/// </summary>
-	public void Unregister( PredictionController controller )
+	public void Unregister( PredictionControllerBase controller )
 	{
 		_controllers.Remove( controller );
 	}
@@ -100,47 +120,63 @@ public sealed class PredictionSystem : GameObjectSystem<PredictionSystem>
 
 		ServerTick = tick;
 
-		// Initial synchronization: set client tick ahead of server
 		if ( !IsSynchronized )
 		{
 			CurrentTick = ServerTick + TargetTickAhead;
 			IsSynchronized = true;
-			Log.Info( $"Prediction synchronized: ServerTick={ServerTick}, CurrentTick={CurrentTick}" );
 			return;
 		}
 
-		// Check for excessive drift
 		var tickDifference = CurrentTick - ServerTick;
 
-		if ( tickDifference < 0 )
-		{
-			// Client is behind server - this is bad, resync
-			Log.Warning( $"Client tick behind server! Resyncing. Client={CurrentTick}, Server={ServerTick}" );
-			CurrentTick = ServerTick + TargetTickAhead;
-		}
-		else if ( tickDifference > MaxTickDrift )
-		{
-			// Client is way too far ahead - resync
-			Log.Warning( $"Client tick drift too large! Resyncing. Client={CurrentTick}, Server={ServerTick}, Drift={tickDifference}" );
-			CurrentTick = ServerTick + TargetTickAhead;
-		}
+		if ( tickDifference >= 0 && tickDifference <= MaxTickDrift )
+			return;
+
+		CurrentTick = ServerTick + TargetTickAhead;
+		_accumulator = 0f;
 	}
 
 	/// <summary>
-	/// Pre-fixed update: prepare for simulation.
+	/// Pre-update: clean up and prepare.
 	/// </summary>
-	private void OnPreFixedUpdate()
+	private void OnPreUpdate()
 	{
-		// Clean up destroyed controllers
 		_controllers.RemoveAll( c => !c.IsValid() );
 	}
 
 	/// <summary>
-	/// Post-fixed update: advance the tick after all simulation.
+	/// Post-update: run simulation ticks and update visuals.
 	/// </summary>
-	private void OnPostFixedUpdate()
+	private void OnPostUpdate()
 	{
-		// Host processes all remote controller inputs
+		var canSimulate = Networking.IsHost || IsSynchronized;
+		if ( !canSimulate )
+			return;
+
+		_accumulator += Time.Delta;
+
+		var ticksThisFrame = 0;
+
+		while ( _accumulator >= TickInterval && ticksThisFrame < MaxTicksPerFrame )
+		{
+			SimulateTick();
+			_accumulator -= TickInterval;
+			ticksThisFrame++;
+		}
+
+		if ( _accumulator > TickInterval * MaxTicksPerFrame )
+		{
+			_accumulator = 0f;
+		}
+
+		UpdateInterpolation();
+	}
+
+	/// <summary>
+	/// Run a single simulation tick.
+	/// </summary>
+	private void SimulateTick()
+	{
 		if ( Networking.IsHost )
 		{
 			foreach ( var controller in _controllers )
@@ -150,45 +186,36 @@ public sealed class PredictionSystem : GameObjectSystem<PredictionSystem>
 
 				if ( !controller.IsLocalController )
 				{
-					controller.ProcessServerInputQueue();
+					controller.ProcessServerInputQueueInternal();
 				}
 			}
 		}
 
-		// Local controllers simulate (clients wait for sync, host always runs)
-		var canSimulate = Networking.IsHost || IsSynchronized;
-
-		if ( !canSimulate )
-			return;
-
+		foreach ( var controller in _controllers )
 		{
-			foreach ( var controller in _controllers )
+			if ( !controller.IsValid() )
+				continue;
+
+			if ( controller.IsLocalController )
 			{
-				if ( !controller.IsValid() )
-					continue;
-
-				if ( controller.IsLocalController )
-				{
-					controller.Simulate();
-				}
+				controller.SimulateInternal();
 			}
-
-			// Advance tick for local simulation
-			CurrentTick++;
 		}
+
+		CurrentTick++;
 	}
 
 	/// <summary>
-	/// Pre-update: handle visual interpolation before rendering.
+	/// Update visuals for all controllers.
 	/// </summary>
-	private void OnPreUpdate()
+	private void UpdateInterpolation()
 	{
 		foreach ( var controller in _controllers )
 		{
-			if ( controller == null || !controller.IsValid )
+			if ( !controller.IsValid() )
 				continue;
 
-			controller.UpdateVisuals();
+			controller.UpdateInterpolationInternal();
 		}
 	}
 }

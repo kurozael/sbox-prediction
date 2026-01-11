@@ -1,6 +1,5 @@
 using System.Threading.Tasks;
-using Prediction;
-using Sandbox;
+using Prediction.Example;
 using Sandbox.Network;
 
 public class NetworkManager : Component, Component.INetworkListener

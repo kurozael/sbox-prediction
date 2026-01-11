@@ -3,22 +3,35 @@ namespace Prediction;
 /// <summary>
 /// Interface for components that need client-side prediction.
 /// </summary>
-public interface IPredicted
+/// <typeparam name="TInput">Your custom input struct implementing IPredictionInput</typeparam>
+/// <typeparam name="TState">Your custom state struct implementing IPredictionState</typeparam>
+public interface IPredicted<TInput, TState>
+	where TInput : struct, IPredictionInput
+	where TState : struct, IPredictionState
 {
 	/// <summary>
 	/// Called every simulation tick with the current input.
 	/// Implement your movement/action logic here.
 	/// </summary>
-	/// <param name="input">The input for this tick.</param>
-	void OnSimulate( PredictionInput input );
+	void OnSimulate( TInput input );
 
-	void BuildInput( ref PredictionInput input );
-	void CaptureState( ref PredictionState state );
-	void ApplyState( PredictionState state );
+	/// <summary>
+	/// Build the input for the current frame.
+	/// </summary>
+	void BuildInput( ref TInput input );
+
+	/// <summary>
+	/// Capture the current state into the provided struct.
+	/// </summary>
+	void WriteState( ref TState state );
+
+	/// <summary>
+	/// Apply a state to restore simulation.
+	/// </summary>
+	void ReadState( TState state );
 
 	/// <summary>
 	/// Optional: Called when the server corrects our predicted state.
-	/// Use this to handle any side effects of reconciliation.
 	/// </summary>
-	void OnReconcile() { }
+	void OnReconcile( TState serverState, TState predictedState ) { }
 }
