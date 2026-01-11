@@ -31,6 +31,12 @@ public struct PlayerState : IPredictionState
 			return false;
 
 		var positionDiff = (Position - otherState.Position).Length;
-		return positionDiff <= tolerance;
+		var velocityDiff = (Velocity - otherState.Velocity).Length;
+		var rotationDiff = Rotation.Distance( otherState.Rotation );
+
+		return positionDiff <= tolerance
+			&& velocityDiff <= tolerance * 10f  // Velocity can vary more
+			&& rotationDiff <= tolerance
+			&& IsGrounded == otherState.IsGrounded;
 	}
 }
