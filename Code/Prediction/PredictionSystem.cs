@@ -6,12 +6,12 @@ namespace Prediction;
 /// <summary>
 /// Non-generic base class for PredictionController so the system can track all controllers.
 /// </summary>
-public abstract class PredictionControllerBase : Component
+public interface IPredictionController : IValid
 {
-	public abstract bool IsLocalController { get; }
-	internal abstract void ProcessServerInputQueueInternal();
-	internal abstract void SimulateInternal();
-	internal abstract void UpdateInterpolationInternal();
+	bool IsLocalController { get; }
+	void ProcessServerInputQueue();
+	void Simulate();
+	void UpdateInterpolation();
 }
 
 /// <summary>
@@ -69,7 +69,7 @@ public sealed class PredictionSystem : GameObjectSystem<PredictionSystem>
 	/// <summary>
 	/// All registered prediction controllers.
 	/// </summary>
-	private readonly List<PredictionControllerBase> _controllers = new();
+	private readonly List<IPredictionController> _controllers = [];
 
 	public PredictionSystem( Scene scene ) : base( scene )
 	{
@@ -80,7 +80,7 @@ public sealed class PredictionSystem : GameObjectSystem<PredictionSystem>
 	/// <summary>
 	/// Register a controller with the system.
 	/// </summary>
-	public void Register( PredictionControllerBase controller )
+	public void Register( IPredictionController controller )
 	{
 		if ( !_controllers.Contains( controller ) )
 		{
@@ -91,7 +91,7 @@ public sealed class PredictionSystem : GameObjectSystem<PredictionSystem>
 	/// <summary>
 	/// Unregister a controller from the system.
 	/// </summary>
-	public void Unregister( PredictionControllerBase controller )
+	public void Unregister( IPredictionController controller )
 	{
 		_controllers.Remove( controller );
 	}
@@ -186,7 +186,7 @@ public sealed class PredictionSystem : GameObjectSystem<PredictionSystem>
 
 				if ( !controller.IsLocalController )
 				{
-					controller.ProcessServerInputQueueInternal();
+					controller.ProcessServerInputQueue();
 				}
 			}
 		}
@@ -198,7 +198,7 @@ public sealed class PredictionSystem : GameObjectSystem<PredictionSystem>
 
 			if ( controller.IsLocalController )
 			{
-				controller.SimulateInternal();
+				controller.Simulate();
 			}
 		}
 
@@ -215,7 +215,7 @@ public sealed class PredictionSystem : GameObjectSystem<PredictionSystem>
 			if ( !controller.IsValid() )
 				continue;
 
-			controller.UpdateInterpolationInternal();
+			controller.UpdateInterpolation();
 		}
 	}
 }

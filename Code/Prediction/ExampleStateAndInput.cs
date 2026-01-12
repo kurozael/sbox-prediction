@@ -1,7 +1,5 @@
 namespace Prediction.Example;
-/// <summary>
-/// Example input struct - extend with your game-specific inputs.
-/// </summary>
+
 public struct PlayerInput : IPredictionInput
 {
 	public int Tick { get; set; }
@@ -13,9 +11,6 @@ public struct PlayerInput : IPredictionInput
 	public bool Use { get; set; }
 }
 
-/// <summary>
-/// Example state struct - extend with your game-specific state.
-/// </summary>
 public struct PlayerState : IPredictionState
 {
 	public int Tick { get; set; }

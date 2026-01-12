@@ -3,8 +3,8 @@ namespace Prediction;
 /// <summary>
 /// Interface for components that need client-side prediction.
 /// </summary>
-/// <typeparam name="TInput">Your custom input struct implementing IPredictionInput</typeparam>
-/// <typeparam name="TState">Your custom state struct implementing IPredictionState</typeparam>
+/// <typeparam name="TInput">Your custom input struct implementing <see cref="IPredictionInput"/>.</typeparam>
+/// <typeparam name="TState">Your custom state struct implementing <see cref="IPredictionState"/>.</typeparam>
 public interface IPredicted<TInput, TState>
 	where TInput : struct, IPredictionInput
 	where TState : struct, IPredictionState

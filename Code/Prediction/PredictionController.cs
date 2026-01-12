@@ -9,7 +9,7 @@ namespace Prediction;
 /// </summary>
 /// <typeparam name="TInput">Your custom input struct implementing <see cref="IPredictionInput"/></typeparam>
 /// <typeparam name="TState">Your custom state struct implementing <see cref="IPredictionState"/></typeparam>
-public abstract class PredictionController<TInput, TState> : PredictionControllerBase
+public abstract class PredictionController<TInput, TState> : Component, IPredictionController
 	where TInput : struct, IPredictionInput
 	where TState : struct, IPredictionState
 {
@@ -82,7 +82,7 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 	/// <summary>
 	/// Returns true if the local client is the controller of this predicted object.
 	/// </summary>
-	public override bool IsLocalController => ControllerId == Connection.Local.Id;
+	public bool IsLocalController => ControllerId == Connection.Local.Id;
 
 	/// <summary>
 	/// Returns true if we are the host AND the controller (no prediction needed, we are authoritative).
@@ -90,9 +90,9 @@ public abstract class PredictionController<TInput, TState> : PredictionControlle
 	private bool IsHostController => Networking.IsHost && IsLocalController;
 
 	// Base class implementations for PredictionSystem
-	internal override void ProcessServerInputQueueInternal() => ProcessServerInputQueue();
-	internal override void SimulateInternal() => Simulate();
-	internal override void UpdateInterpolationInternal() => UpdateInterpolation();
+	void IPredictionController.ProcessServerInputQueue() => ProcessServerInputQueue();
+	void IPredictionController.UpdateInterpolation() => UpdateInterpolation();
+	void IPredictionController.Simulate() => Simulate();
 
 	/// <summary>
 	/// Get the true simulation position (without visual smoothing offset).
